@@ -394,6 +394,28 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 
 	// nav: / act: — synchronous card update
 	if strings.HasPrefix(actionVal, "nav:") || strings.HasPrefix(actionVal, "act:") {
+		// Switching sessions may require listing sessions and closing old state,
+		// which can exceed Feishu card callback latency. Dispatch it as a normal
+		// command instead of blocking the callback on an in-place card refresh.
+		if strings.HasPrefix(actionVal, "act:/switch ") {
+			cmdText := strings.TrimPrefix(actionVal, "act:")
+			rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
+			go p.handler(p.dispatchPlatform(), &core.Message{
+				SessionKey: sessionKey,
+				Platform:   p.platformName,
+				UserID:     userID,
+				UserName:   p.resolveUserName(userID),
+				ChatName:   p.resolveChatName(chatID),
+				Content:    cmdText,
+				ReplyCtx:   rctx,
+			})
+			return &callback.CardActionTriggerResponse{
+				Toast: &callback.Toast{
+					Type:    "info",
+					Content: "正在切换会话（Switching session...）",
+				},
+			}, nil
+		}
 		// Feishu uses native form checker for delete-mode toggle,
 		// so return a toast without calling cardNavHandler to avoid a full card refresh.
 		if strings.HasPrefix(actionVal, "act:/delete-mode toggle ") {

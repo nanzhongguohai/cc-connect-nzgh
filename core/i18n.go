@@ -145,6 +145,9 @@ const (
 	MsgQuietOff                  MsgKey = "quiet_off"
 	MsgQuietGlobalOn             MsgKey = "quiet_global_on"
 	MsgQuietGlobalOff            MsgKey = "quiet_global_off"
+	MsgViewCurrent               MsgKey = "view_current"
+	MsgViewChanged               MsgKey = "view_changed"
+	MsgViewUsage                 MsgKey = "view_usage"
 	MsgModeChanged               MsgKey = "mode_changed"
 	MsgModeNotSupported          MsgKey = "mode_not_supported"
 	MsgSessionRestarting         MsgKey = "session_restarting"
@@ -258,14 +261,17 @@ const (
 	MsgUsageFetchFailed   MsgKey = "usage_fetch_failed"
 
 	// Inline strings previously hardcoded in engine.go
-	MsgStatusMode       MsgKey = "status_mode"
-	MsgStatusSession    MsgKey = "status_session"
-	MsgStatusCron       MsgKey = "status_cron"
-	MsgStatusQuiet      MsgKey = "status_quiet"
-	MsgStatusSessionKey MsgKey = "status_session_key"
-	MsgStatusUserID     MsgKey = "status_user_id"
-	MsgQuietOnShort     MsgKey = "quiet_on_short"
-	MsgQuietOffShort    MsgKey = "quiet_off_short"
+	MsgStatusMode            MsgKey = "status_mode"
+	MsgStatusSession         MsgKey = "status_session"
+	MsgStatusCron            MsgKey = "status_cron"
+	MsgStatusQuiet           MsgKey = "status_quiet"
+	MsgStatusSessionKey      MsgKey = "status_session_key"
+	MsgStatusUserID          MsgKey = "status_user_id"
+	MsgViewAllShort          MsgKey = "view_all_short"
+	MsgViewThinkingOnlyShort MsgKey = "view_thinking_only_short"
+	MsgViewQuietShort        MsgKey = "view_quiet_short"
+	MsgQuietOnShort          MsgKey = "quiet_on_short"
+	MsgQuietOffShort         MsgKey = "quiet_off_short"
 
 	MsgModelDefault               MsgKey = "model_default"
 	MsgModelListTitle             MsgKey = "model_list_title"
@@ -456,6 +462,7 @@ const (
 	MsgBuiltinCmdReasoning MsgKey = "reasoning"
 	MsgBuiltinCmdMode      MsgKey = "mode"
 	MsgBuiltinCmdLang      MsgKey = "lang"
+	MsgBuiltinCmdView      MsgKey = "view"
 	MsgBuiltinCmdQuiet     MsgKey = "quiet"
 	MsgBuiltinCmdCompress  MsgKey = "compress"
 	MsgBuiltinCmdStop      MsgKey = "stop"
@@ -685,6 +692,27 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "🔔 グローバル静音モード OFF — 全セッションで思考とツール進捗を表示します。",
 		LangSpanish:            "🔔 Modo silencioso global desactivado — todas las sesiones mostrarán los mensajes de progreso.",
 	},
+	MsgViewCurrent: {
+		LangEnglish:            "Current progress view: %s",
+		LangChinese:            "当前进度显示: %s",
+		LangTraditionalChinese: "當前進度顯示: %s",
+		LangJapanese:           "現在の進捗表示: %s",
+		LangSpanish:            "Vista actual del progreso: %s",
+	},
+	MsgViewChanged: {
+		LangEnglish:            "Progress view switched to `%s`.",
+		LangChinese:            "进度显示已切换为 `%s`。",
+		LangTraditionalChinese: "進度顯示已切換為 `%s`。",
+		LangJapanese:           "進捗表示を `%s` に切り替えました。",
+		LangSpanish:            "La vista de progreso cambió a `%s`.",
+	},
+	MsgViewUsage: {
+		LangEnglish:            "Usage: `/view <all|thinking-only|quiet>`",
+		LangChinese:            "用法: `/view <all|thinking-only|quiet>`",
+		LangTraditionalChinese: "用法: `/view <all|thinking-only|quiet>`",
+		LangJapanese:           "使い方: `/view <all|thinking-only|quiet>`",
+		LangSpanish:            "Uso: `/view <all|thinking-only|quiet>`",
+	},
 	MsgModeChanged: {
 		LangEnglish:            "🔄 Permission mode switched to **%s**. New sessions will use this mode.",
 		LangChinese:            "🔄 权限模式已切换为 **%s**，新会话将使用此模式。",
@@ -758,6 +786,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/reasoning [level]\n  View/switch reasoning effort\n\n" +
 			"/mode [name]\n  View/switch permission mode\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  View/switch language\n\n" +
+			"/view [all|thinking-only|quiet]\n  Control progress display mode\n\n" +
 			"/quiet [global]\n  Toggle thinking/tool progress (global = all sessions)\n\n" +
 			"/compress\n  Compress conversation context\n\n" +
 			"/tts [always|voice_only]\n  View/switch text-to-speech mode\n\n" +
@@ -801,6 +830,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/reasoning [级别]\n  查看/切换推理强度\n\n" +
 			"/mode [名称]\n  查看/切换权限模式\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  查看/切换语言\n\n" +
+			"/view [all|thinking-only|quiet]\n  控制进度显示模式\n\n" +
 			"/quiet [global]\n  开关思考和工具进度消息（global = 全部会话）\n\n" +
 			"/compress\n  压缩会话上下文\n\n" +
 			"/tts [always|voice_only]\n  查看/切换语音合成模式\n\n" +
@@ -844,6 +874,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/reasoning [級別]\n  查看/切換推理強度\n\n" +
 			"/mode [名稱]\n  查看/切換權限模式\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  查看/切換語言\n\n" +
+			"/view [all|thinking-only|quiet]\n  控制進度顯示模式\n\n" +
 			"/quiet [global]\n  開關思考和工具進度訊息（global = 全部會話）\n\n" +
 			"/compress\n  壓縮會話上下文\n\n" +
 			"/tts [always|voice_only]\n  查看/切換語音合成模式\n\n" +
@@ -886,6 +917,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/reasoning [レベル]\n  推論レベルの表示/切り替え\n\n" +
 			"/mode [名前]\n  権限モードの表示/切り替え\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  言語の表示/切り替え\n\n" +
+			"/view [all|thinking-only|quiet]\n  進捗表示モードを切り替え\n\n" +
 			"/quiet [global]\n  思考/ツール進捗メッセージの表示切替（global = 全セッション）\n\n" +
 			"/compress\n  会話コンテキストを圧縮\n\n" +
 			"/tts [always|voice_only]\n  音声合成モードの表示/切り替え\n\n" +
@@ -928,6 +960,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/reasoning [nivel]\n  Ver/cambiar nivel de razonamiento\n\n" +
 			"/mode [nombre]\n  Ver/cambiar modo de permisos\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  Ver/cambiar idioma\n\n" +
+			"/view [all|thinking-only|quiet]\n  Controlar el modo de progreso\n\n" +
 			"/quiet [global]\n  Alternar mensajes de progreso (global = todas las sesiones)\n\n" +
 			"/compress\n  Comprimir contexto de conversación\n\n" +
 			"/tts [always|voice_only]\n  Ver/cambiar modo de síntesis de voz\n\n" +
@@ -1018,6 +1051,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/memory [add|global|...] — View/edit memory files\n" +
 			"/allow <tool> — Pre-allow a tool\n" +
 			"/lang [en|zh|...] — View/switch language\n" +
+			"/view [all|thinking-only|quiet] — Control progress display\n" +
 			"/quiet [global] — Toggle progress messages",
 		LangChinese: "**Agent 配置**\n" +
 			"/model [switch <名称>] — 查看/切换模型\n" +
@@ -1026,6 +1060,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/memory [add|global|...] — 查看/编辑记忆文件\n" +
 			"/allow <工具名> — 预授权工具\n" +
 			"/lang [en|zh|...] — 查看/切换语言\n" +
+			"/view [all|thinking-only|quiet] — 控制进度显示\n" +
 			"/quiet [global] — 开关进度消息",
 		LangTraditionalChinese: "**Agent 配置**\n" +
 			"/model [switch <名稱>] — 查看/切換模型\n" +
@@ -1034,6 +1069,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/memory [add|global|...] — 查看/編輯記憶檔案\n" +
 			"/allow <工具名> — 預授權工具\n" +
 			"/lang [en|zh|...] — 查看/切換語言\n" +
+			"/view [all|thinking-only|quiet] — 控制進度顯示\n" +
 			"/quiet [global] — 開關進度訊息",
 		LangJapanese: "**エージェント設定**\n" +
 			"/model [switch <名前>] — モデルの表示/切り替え\n" +
@@ -1042,6 +1078,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/memory [add|global|...] — メモリの表示/編集\n" +
 			"/allow <ツール名> — ツールを事前許可\n" +
 			"/lang [en|zh|...] — 言語の表示/切り替え\n" +
+			"/view [all|thinking-only|quiet] — 進捗表示を切り替え\n" +
 			"/quiet [global] — 進捗メッセージの表示切替",
 		LangSpanish: "**Configuración del agente**\n" +
 			"/model [switch <nombre>] — Ver/cambiar modelo\n" +
@@ -1050,6 +1087,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/memory [add|global|...] — Ver/editar memoria\n" +
 			"/allow <herramienta> — Pre-autorizar herramienta\n" +
 			"/lang [en|zh|...] — Ver/cambiar idioma\n" +
+			"/view [all|thinking-only|quiet] — Controlar vista de progreso\n" +
 			"/quiet [global] — Alternar mensajes de progreso",
 	},
 	MsgHelpToolsSection: {
@@ -1898,11 +1936,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Tareas programadas: %d (habilitadas: %d)\n",
 	},
 	MsgStatusQuiet: {
-		LangEnglish:            "Quiet mode: %s\n",
-		LangChinese:            "安静模式: %s\n",
-		LangTraditionalChinese: "安靜模式: %s\n",
-		LangJapanese:           "出力抑制モード: %s\n",
-		LangSpanish:            "Modo silencioso: %s\n",
+		LangEnglish:            "Progress view: %s\n",
+		LangChinese:            "进度显示: %s\n",
+		LangTraditionalChinese: "進度顯示: %s\n",
+		LangJapanese:           "進捗表示: %s\n",
+		LangSpanish:            "Vista de progreso: %s\n",
 	},
 	MsgStatusSessionKey: {
 		LangEnglish:            "Session Key: `%s`\n",
@@ -1931,6 +1969,27 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "關閉",
 		LangJapanese:           "OFF",
 		LangSpanish:            "Desactivado",
+	},
+	MsgViewAllShort: {
+		LangEnglish:            "all",
+		LangChinese:            "全部",
+		LangTraditionalChinese: "全部",
+		LangJapanese:           "すべて",
+		LangSpanish:            "todo",
+	},
+	MsgViewThinkingOnlyShort: {
+		LangEnglish:            "thinking-only",
+		LangChinese:            "仅思考",
+		LangTraditionalChinese: "僅思考",
+		LangJapanese:           "思考のみ",
+		LangSpanish:            "solo razonamiento",
+	},
+	MsgViewQuietShort: {
+		LangEnglish:            "quiet",
+		LangChinese:            "静默",
+		LangTraditionalChinese: "靜默",
+		LangJapanese:           "静音",
+		LangSpanish:            "silencio",
 	},
 	MsgModelDefault: {
 		LangEnglish:            "Current model: (not set, using agent default)\n",
@@ -3023,6 +3082,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "查看/切換語言，參數: [en|zh|zh-TW|ja|es|auto]",
 		LangJapanese:           "言語の表示/切り替え、引数: [en|zh|zh-TW|ja|es|auto]",
 		LangSpanish:            "Ver/cambiar idioma, arg: [en|zh|zh-TW|ja|es|auto]",
+	},
+	MsgBuiltinCmdView: {
+		LangEnglish:            "Control progress display, arg: [all|thinking-only|quiet]",
+		LangChinese:            "控制进度显示，参数: [all|thinking-only|quiet]",
+		LangTraditionalChinese: "控制進度顯示，參數: [all|thinking-only|quiet]",
+		LangJapanese:           "進捗表示を切り替え、引数: [all|thinking-only|quiet]",
+		LangSpanish:            "Controlar vista de progreso, arg: [all|thinking-only|quiet]",
 	},
 	MsgBuiltinCmdQuiet: {
 		LangEnglish:            "Toggle thinking/tool progress, arg: [global]",

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/chenhg5/cc-connect/config"
 	"github.com/chenhg5/cc-connect/core"
 )
 
@@ -71,5 +72,41 @@ func TestApplyProjectStateOverride(t *testing.T) {
 	}
 	if agent.workDir != overrideDir {
 		t.Fatalf("agent workDir = %q, want %q", agent.workDir, overrideDir)
+	}
+}
+
+func TestMultiWorkspaceDefaultsAgentWorkDirToBaseDir(t *testing.T) {
+	baseDir := t.TempDir()
+	agent := &stubMainAgent{}
+	proj := config.ProjectConfig{
+		Mode:    "multi-workspace",
+		BaseDir: baseDir,
+	}
+
+	workDir, _ := proj.Agent.Options["work_dir"].(string)
+	if proj.Mode == "multi-workspace" {
+		workDir = resolveMultiWorkspaceBaseDir(proj.BaseDir)
+		if switcher, ok := any(agent).(core.WorkDirSwitcher); ok && workDir != "" {
+			switcher.SetWorkDir(workDir)
+		}
+	}
+	got := applyProjectStateOverride("demo", agent, workDir, nil)
+
+	if got != baseDir {
+		t.Fatalf("effective workDir = %q, want %q", got, baseDir)
+	}
+	if agent.workDir != baseDir {
+		t.Fatalf("agent workDir = %q, want %q", agent.workDir, baseDir)
+	}
+}
+
+func TestResolveMultiWorkspaceBaseDir_ExpandsHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := resolveMultiWorkspaceBaseDir("~/code")
+	want := filepath.Join(home, "code")
+	if got != want {
+		t.Fatalf("resolveMultiWorkspaceBaseDir() = %q, want %q", got, want)
 	}
 }

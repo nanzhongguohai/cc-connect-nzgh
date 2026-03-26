@@ -384,6 +384,51 @@ func TestInteractivePlatform_CardActionUsesCallbackSessionKey(t *testing.T) {
 	}
 }
 
+func TestInteractivePlatform_CardActionSwitchDispatchesAsCommand(t *testing.T) {
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	ip := platformAny.(*interactivePlatform)
+
+	msgCh := make(chan *core.Message, 1)
+	ip.handler = func(_ core.Platform, msg *core.Message) {
+		msgCh <- msg
+	}
+
+	resp, err := ip.onCardAction(&callback.CardActionTriggerEvent{
+		Event: &callback.CardActionTriggerRequest{
+			Operator: &callback.Operator{OpenID: "ou_test_user"},
+			Action: &callback.CallBackAction{Value: map[string]any{
+				"action":      "act:/switch 3",
+				"session_key": "feishu:oc_test_chat:ou_test_user",
+			}},
+			Context: &callback.Context{
+				OpenChatID:    "oc_test_chat",
+				OpenMessageID: "om_card_message",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("onCardAction() error = %v", err)
+	}
+	if resp == nil || resp.Toast == nil {
+		t.Fatal("expected toast response for switch action")
+	}
+
+	select {
+	case msg := <-msgCh:
+		if msg.Content != "/switch 3" {
+			t.Fatalf("Content = %q, want %q", msg.Content, "/switch 3")
+		}
+		if msg.SessionKey != "feishu:oc_test_chat:ou_test_user" {
+			t.Fatalf("SessionKey = %q", msg.SessionKey)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected switch command dispatch")
+	}
+}
+
 func TestNewLark_PlatformNameAndDomain(t *testing.T) {
 	p, err := newPlatform("lark", lark.LarkBaseUrl, map[string]any{
 		"app_id": "cli_xxx", "app_secret": "secret",

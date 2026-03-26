@@ -11,10 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -243,6 +243,7 @@ type interactiveState struct {
 	pendingMessages        []queuedMessage // messages queued while session was busy
 	approveAll             bool            // when true, auto-approve all permission requests for this session
 	quiet                  bool            // when true, suppress thinking and tool progress for this session
+	hideToolProgress       bool            // when true, suppress tool progress but still show thinking
 	fromVoice              bool            // true if current turn originated from voice transcription
 	sideText               string
 	deleteMode             *deleteModeState
@@ -371,9 +372,50 @@ func (e *Engine) SetDisplayConfig(cfg DisplayCfg) {
 	e.display = cfg
 }
 
-// SetDefaultQuiet sets whether new sessions start in quiet mode.
+// SetDefaultQuiet configures the default progress view for new sessions.
+// When q is true, new sessions start in quiet mode.
+// When q is false, new sessions default to thinking-only mode.
 func (e *Engine) SetDefaultQuiet(q bool) {
 	e.defaultQuiet = q
+}
+
+func (e *Engine) defaultProgressViewSettings() (quiet bool, hideToolProgress bool) {
+	quiet = e.defaultQuiet
+	return quiet, !quiet
+}
+
+func normalizeProgressViewMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "all":
+		return "all"
+	case "thinking", "thinking-only", "thinking_only":
+		return "thinking-only"
+	case "quiet":
+		return "quiet"
+	default:
+		return ""
+	}
+}
+
+func progressViewMode(quiet, hideToolProgress bool) string {
+	if quiet {
+		return "quiet"
+	}
+	if hideToolProgress {
+		return "thinking-only"
+	}
+	return "all"
+}
+
+func (e *Engine) progressViewLabel(mode string) string {
+	switch normalizeProgressViewMode(mode) {
+	case "thinking-only":
+		return e.i18n.T(MsgViewThinkingOnlyShort)
+	case "quiet":
+		return e.i18n.T(MsgViewQuietShort)
+	default:
+		return e.i18n.T(MsgViewAllShort)
+	}
 }
 
 // estimateTokens provides a rough token estimate for a set of history entries.
@@ -1887,11 +1929,12 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		ok = false // prevent reading stale settings below
 	}
 
-	// Preserve quiet setting from existing state (e.g. set via /quiet before session started)
-	quietMode := e.defaultQuiet
+	// Preserve display setting from existing state (e.g. set via /quiet or /view before session started)
+	quietMode, hideToolProgress := e.defaultProgressViewSettings()
 	if ok && state != nil {
 		state.mu.Lock()
 		quietMode = state.quiet
+		hideToolProgress = state.hideToolProgress
 		state.mu.Unlock()
 	}
 
@@ -1937,7 +1980,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	// Check if context is already canceled (e.g. during shutdown/restart)
 	if e.ctx.Err() != nil {
 		slog.Debug("skipping session start: context canceled", "session_key", sessionKey)
-		state = &interactiveState{platform: p, replyCtx: replyCtx, quiet: quietMode}
+		state = &interactiveState{platform: p, replyCtx: replyCtx, quiet: quietMode, hideToolProgress: hideToolProgress}
 		e.interactiveStates[sessionKey] = state
 		return state
 	}
@@ -1974,7 +2017,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		}
 		if err != nil {
 			slog.Error("failed to start interactive session", "error", err, "elapsed", startElapsed)
-			state = &interactiveState{platform: p, replyCtx: replyCtx, quiet: quietMode}
+			state = &interactiveState{platform: p, replyCtx: replyCtx, quiet: quietMode, hideToolProgress: hideToolProgress}
 			e.interactiveStates[sessionKey] = state
 			return state
 		}
@@ -1994,10 +2037,11 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	}
 
 	state = &interactiveState{
-		agentSession: agentSession,
-		platform:     p,
-		replyCtx:     replyCtx,
-		quiet:        quietMode,
+		agentSession:     agentSession,
+		platform:         p,
+		replyCtx:         replyCtx,
+		quiet:            quietMode,
+		hideToolProgress: hideToolProgress,
 	}
 	e.interactiveStates[sessionKey] = state
 
@@ -2126,6 +2170,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		p := state.platform
 		replyCtx := state.replyCtx
 		sessionQuiet := state.quiet
+		hideToolProgress := state.hideToolProgress
 		state.mu.Unlock()
 
 		e.quietMu.RLock()
@@ -2133,10 +2178,12 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		e.quietMu.RUnlock()
 
 		quiet := globalQuiet || sessionQuiet
+		showThinking := !quiet
+		showToolProgress := !quiet && !hideToolProgress
 
 		switch event.Type {
 		case EventThinking:
-			if !quiet && event.Content != "" {
+			if showThinking && event.Content != "" {
 				// Flush accumulated text segment before thinking display
 				previewActive := sp.canPreview()
 				if len(textParts) > segmentStart {
@@ -2160,7 +2207,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 		case EventToolUse:
 			toolCount++
-			if !quiet {
+			if showToolProgress {
 				// Flush accumulated text segment before tool display
 				previewActive := sp.canPreview()
 				if len(textParts) > segmentStart {
@@ -2647,6 +2694,7 @@ var builtinCommands = []struct {
 	{[]string{"reasoning", "effort"}, "reasoning"},
 	{[]string{"mode"}, "mode"},
 	{[]string{"lang"}, "lang"},
+	{[]string{"view", "display"}, "view"},
 	{[]string{"quiet"}, "quiet"},
 	{[]string{"provider"}, "provider"},
 	{[]string{"memory"}, "memory"},
@@ -2812,6 +2860,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdMode(p, msg, args)
 	case "lang":
 		e.cmdLang(p, msg, args)
+	case "view":
+		e.cmdView(p, msg, args)
 	case "quiet":
 		e.cmdQuiet(p, msg, args)
 	case "provider":
@@ -3628,18 +3678,15 @@ func (e *Engine) cmdStatus(p Platform, msg *Message) {
 		state, hasState := e.interactiveStates[iKey]
 		e.interactiveMu.Unlock()
 
-		sessionQuiet := false
+		sessionQuiet, hideToolProgress := e.defaultProgressViewSettings()
 		if hasState && state != nil {
 			state.mu.Lock()
 			sessionQuiet = state.quiet
+			hideToolProgress = state.hideToolProgress
 			state.mu.Unlock()
 		}
 
-		quietStr := e.i18n.T(MsgQuietOffShort)
-		if globalQuiet || sessionQuiet {
-			quietStr = e.i18n.T(MsgQuietOnShort)
-		}
-		modeStr += e.i18n.Tf(MsgStatusQuiet, quietStr)
+		modeStr += e.i18n.Tf(MsgStatusQuiet, e.progressViewLabel(progressViewMode(globalQuiet || sessionQuiet, hideToolProgress)))
 
 		s := sessions.GetOrCreateActive(msg.SessionKey)
 		sessionDisplayName := sessions.GetSessionName(s.GetAgentSessionID())
@@ -4024,18 +4071,15 @@ func (e *Engine) renderStatusCard(sessionKey string, userID string) *Card {
 	state, hasState := e.interactiveStates[sessionKey]
 	e.interactiveMu.Unlock()
 
-	sessionQuiet := false
+	sessionQuiet, hideToolProgress := e.defaultProgressViewSettings()
 	if hasState && state != nil {
 		state.mu.Lock()
 		sessionQuiet = state.quiet
+		hideToolProgress = state.hideToolProgress
 		state.mu.Unlock()
 	}
 
-	quietStr := e.i18n.T(MsgQuietOffShort)
-	if globalQuiet || sessionQuiet {
-		quietStr = e.i18n.T(MsgQuietOnShort)
-	}
-	modeStr += e.i18n.Tf(MsgStatusQuiet, quietStr)
+	modeStr += e.i18n.Tf(MsgStatusQuiet, e.progressViewLabel(progressViewMode(globalQuiet || sessionQuiet, hideToolProgress)))
 
 	s := sessions.GetOrCreateActive(sessionKey)
 	sessionDisplayName := sessions.GetSessionName(s.GetAgentSessionID())
@@ -4821,11 +4865,21 @@ func (e *Engine) cmdQuiet(p Platform, msg *Message, args []string) {
 	e.interactiveMu.Unlock()
 
 	if !ok || state == nil {
-		state = &interactiveState{platform: p, replyCtx: msg.ReplyCtx, quiet: true}
+		defaultQuiet, defaultHideToolProgress := e.defaultProgressViewSettings()
+		state = &interactiveState{
+			platform:         p,
+			replyCtx:         msg.ReplyCtx,
+			quiet:            !defaultQuiet,
+			hideToolProgress: defaultHideToolProgress,
+		}
 		e.interactiveMu.Lock()
 		e.interactiveStates[iKey] = state
 		e.interactiveMu.Unlock()
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQuietOn))
+		if state.quiet {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQuietOn))
+		} else {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQuietOff))
+		}
 		return
 	}
 
@@ -4839,6 +4893,65 @@ func (e *Engine) cmdQuiet(p Platform, msg *Message, args []string) {
 	} else {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQuietOff))
 	}
+}
+
+func (e *Engine) cmdView(p Platform, msg *Message, args []string) {
+	iKey := e.interactiveKeyForSessionKey(msg.SessionKey)
+	e.interactiveMu.Lock()
+	state, ok := e.interactiveStates[iKey]
+	e.interactiveMu.Unlock()
+
+	if len(args) == 0 {
+		e.quietMu.RLock()
+		globalQuiet := e.quiet
+		e.quietMu.RUnlock()
+
+		sessionQuiet, hideToolProgress := e.defaultProgressViewSettings()
+		if ok && state != nil {
+			state.mu.Lock()
+			sessionQuiet = state.quiet
+			hideToolProgress = state.hideToolProgress
+			state.mu.Unlock()
+		}
+		mode := progressViewMode(globalQuiet || sessionQuiet, hideToolProgress)
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgViewCurrent, e.progressViewLabel(mode))+"\n"+e.i18n.T(MsgViewUsage))
+		return
+	}
+
+	mode := normalizeProgressViewMode(args[0])
+	if mode == "" {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgViewUsage))
+		return
+	}
+
+	if !ok || state == nil {
+		defaultQuiet, defaultHideToolProgress := e.defaultProgressViewSettings()
+		state = &interactiveState{
+			platform:         p,
+			replyCtx:         msg.ReplyCtx,
+			quiet:            defaultQuiet,
+			hideToolProgress: defaultHideToolProgress,
+		}
+		e.interactiveMu.Lock()
+		e.interactiveStates[iKey] = state
+		e.interactiveMu.Unlock()
+	}
+
+	state.mu.Lock()
+	switch mode {
+	case "quiet":
+		state.quiet = true
+		state.hideToolProgress = false
+	case "thinking-only":
+		state.quiet = false
+		state.hideToolProgress = true
+	default:
+		state.quiet = false
+		state.hideToolProgress = false
+	}
+	state.mu.Unlock()
+
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgViewChanged, e.progressViewLabel(mode)))
 }
 
 func (e *Engine) cmdTTS(p Platform, msg *Message, args []string) {
@@ -4884,6 +4997,7 @@ func (e *Engine) cmdStop(p Platform, msg *Message) {
 	state.mu.Lock()
 	pending := state.pending
 	quietMode := state.quiet
+	hideToolProgress := state.hideToolProgress
 	if pending != nil {
 		state.pending = nil
 	}
@@ -4894,15 +5008,21 @@ func (e *Engine) cmdStop(p Platform, msg *Message) {
 
 	e.cleanupInteractiveState(iKey)
 
-	// Preserve quiet preference across stop
-	if quietMode {
+	// Preserve display preference across stop
+	if quietMode || hideToolProgress {
 		e.interactiveMu.Lock()
 		if s, ok := e.interactiveStates[iKey]; ok {
 			s.mu.Lock()
 			s.quiet = quietMode
+			s.hideToolProgress = hideToolProgress
 			s.mu.Unlock()
 		} else {
-			e.interactiveStates[iKey] = &interactiveState{platform: p, replyCtx: msg.ReplyCtx, quiet: quietMode}
+			e.interactiveStates[iKey] = &interactiveState{
+				platform:         p,
+				replyCtx:         msg.ReplyCtx,
+				quiet:            quietMode,
+				hideToolProgress: hideToolProgress,
+			}
 		}
 		e.interactiveMu.Unlock()
 	}
@@ -5898,7 +6018,11 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		e.interactiveMu.Lock()
 		state, ok := e.interactiveStates[interactiveKey]
 		if !ok || state == nil {
-			state = &interactiveState{quiet: true}
+			defaultQuiet, defaultHideToolProgress := e.defaultProgressViewSettings()
+			state = &interactiveState{
+				quiet:            !defaultQuiet,
+				hideToolProgress: defaultHideToolProgress,
+			}
 			e.interactiveStates[interactiveKey] = state
 			e.interactiveMu.Unlock()
 		} else {
@@ -5939,14 +6063,15 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		state.mu.Lock()
 		pending := state.pending
 		quietMode := state.quiet
+		hideToolProgress := state.hideToolProgress
 		agentSession := state.agentSession
 		if pending != nil {
 			state.pending = nil
 		}
 		state.agentSession = nil
 		state.mu.Unlock()
-		if quietMode {
-			e.interactiveStates[sessionKey] = &interactiveState{quiet: true}
+		if quietMode || hideToolProgress {
+			e.interactiveStates[sessionKey] = &interactiveState{quiet: quietMode, hideToolProgress: hideToolProgress}
 		} else {
 			delete(e.interactiveStates, sessionKey)
 		}
@@ -6001,7 +6126,13 @@ func (e *Engine) getOrCreateDeleteModeState(sessionKey string, p Platform, reply
 	e.interactiveMu.Lock()
 	state, ok := e.interactiveStates[interactiveKey]
 	if !ok || state == nil {
-		state = &interactiveState{platform: p, replyCtx: replyCtx}
+		defaultQuiet, defaultHideToolProgress := e.defaultProgressViewSettings()
+		state = &interactiveState{
+			platform:         p,
+			replyCtx:         replyCtx,
+			quiet:            defaultQuiet,
+			hideToolProgress: defaultHideToolProgress,
+		}
 		e.interactiveStates[interactiveKey] = state
 	} else {
 		state.platform = p

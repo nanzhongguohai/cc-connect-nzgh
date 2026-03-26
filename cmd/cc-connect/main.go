@@ -174,6 +174,12 @@ func main() {
 		}
 
 		workDir, _ := proj.Agent.Options["work_dir"].(string)
+		if proj.Mode == "multi-workspace" {
+			workDir = resolveMultiWorkspaceBaseDir(proj.BaseDir)
+			if switcher, ok := agent.(core.WorkDirSwitcher); ok && strings.TrimSpace(workDir) != "" {
+				switcher.SetWorkDir(workDir)
+			}
+		}
 		projectState := core.NewProjectStateStore(projectStatePath(cfg.DataDir, proj.Name))
 		effectiveWorkDir := applyProjectStateOverride(proj.Name, agent, workDir, projectState)
 		sessionFile := sessionStorePath(cfg.DataDir, proj.Name, effectiveWorkDir)
@@ -202,11 +208,7 @@ func main() {
 
 		// Wire multi-workspace mode
 		if proj.Mode == "multi-workspace" {
-			baseDir := proj.BaseDir
-			if strings.HasPrefix(baseDir, "~/") {
-				home, _ := os.UserHomeDir()
-				baseDir = filepath.Join(home, baseDir[2:])
-			}
+			baseDir := resolveMultiWorkspaceBaseDir(proj.BaseDir)
 			if err := os.MkdirAll(baseDir, 0o755); err != nil {
 				slog.Error("failed to create base_dir", "path", baseDir, "err", err)
 				continue
@@ -1167,6 +1169,18 @@ func buildHeartbeatConfig(hc config.HeartbeatConfig) core.HeartbeatConfig {
 		cfg.TimeoutMins = *hc.TimeoutMins
 	}
 	return cfg
+}
+
+func resolveMultiWorkspaceBaseDir(baseDir string) string {
+	baseDir = strings.TrimSpace(baseDir)
+	if strings.HasPrefix(baseDir, "~/") {
+		home, _ := os.UserHomeDir()
+		baseDir = filepath.Join(home, baseDir[2:])
+	}
+	if absDir, err := filepath.Abs(baseDir); err == nil {
+		baseDir = absDir
+	}
+	return baseDir
 }
 
 func derefInt(v *int) int {

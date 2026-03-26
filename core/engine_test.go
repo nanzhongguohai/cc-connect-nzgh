@@ -1689,6 +1689,102 @@ func TestQuietGlobalAndSessionCombined(t *testing.T) {
 	}
 }
 
+func TestViewDefaultIsThinkingOnly(t *testing.T) {
+	e := newTestEngine()
+	p := &stubPlatformEngine{n: "test"}
+	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+
+	e.cmdView(p, msg, nil)
+
+	if len(p.sent) == 0 {
+		t.Fatal("expected /view response")
+	}
+	if got := p.sent[len(p.sent)-1]; !strings.Contains(got, "thinking-only") {
+		t.Fatalf("expected default view to be thinking-only, got %q", got)
+	}
+}
+
+func TestQuietSessionToggle_FirstToggleRespectsDefaultQuiet(t *testing.T) {
+	e := newTestEngine()
+	e.SetDefaultQuiet(true)
+	p := &stubPlatformEngine{n: "test"}
+	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+
+	e.cmdQuiet(p, msg, nil)
+
+	e.interactiveMu.Lock()
+	state := e.interactiveStates["test:user1"]
+	e.interactiveMu.Unlock()
+	if state == nil {
+		t.Fatal("expected interactiveState to be created")
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.quiet {
+		t.Fatal("expected first /quiet toggle to switch default quiet on -> off")
+	}
+}
+
+func TestViewThinkingOnlySetsSessionMode(t *testing.T) {
+	e := newTestEngine()
+	p := &stubPlatformEngine{n: "test"}
+	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+
+	e.cmdView(p, msg, []string{"thinking-only"})
+
+	e.interactiveMu.Lock()
+	state := e.interactiveStates["test:user1"]
+	e.interactiveMu.Unlock()
+	if state == nil {
+		t.Fatal("expected interactiveState to be created")
+	}
+
+	state.mu.Lock()
+	quiet := state.quiet
+	hideTools := state.hideToolProgress
+	state.mu.Unlock()
+
+	if quiet {
+		t.Fatal("expected quiet to be false")
+	}
+	if !hideTools {
+		t.Fatal("expected hideToolProgress to be true")
+	}
+}
+
+func TestProcessInteractiveEvents_ThinkingOnlyShowsThinkingHidesTool(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	sessionKey := "test:user1"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	agentSession := newControllableSession("s1")
+	state := &interactiveState{
+		agentSession:     agentSession,
+		platform:         p,
+		replyCtx:         "ctx-1",
+		hideToolProgress: true,
+	}
+	e.interactiveStates[sessionKey] = state
+
+	agentSession.events <- Event{Type: EventThinking, Content: "checking files"}
+	agentSession.events <- Event{Type: EventToolUse, ToolName: "Bash", ToolInput: "pwd"}
+	agentSession.events <- Event{Type: EventText, Content: "final response"}
+	agentSession.events <- Event{Type: EventResult, Content: "", Done: true}
+
+	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m1", time.Now(), nil)
+
+	sent := strings.Join(p.getSent(), "\n")
+	if !strings.Contains(sent, "checking files") {
+		t.Fatalf("expected thinking output, got %q", sent)
+	}
+	if strings.Contains(sent, "Bash") || strings.Contains(sent, "pwd") {
+		t.Fatalf("expected tool progress to be hidden, got %q", sent)
+	}
+	if !strings.Contains(sent, "final response") {
+		t.Fatalf("expected final response, got %q", sent)
+	}
+}
+
 func TestReplyWithCard_FallsBackToTextWhenPlatformHasNoCardSupport(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
@@ -4051,9 +4147,9 @@ func TestCmdBindSetup_UsesSharedLogic(t *testing.T) {
 
 // stubStartSessionAgent records StartSession calls and can fail on specific session IDs.
 type stubStartSessionAgent struct {
-	calls    []string
-	failIDs  map[string]error // session IDs that should fail
-	mu       sync.Mutex
+	calls   []string
+	failIDs map[string]error // session IDs that should fail
+	mu      sync.Mutex
 }
 
 func (a *stubStartSessionAgent) Name() string { return "stub" }
