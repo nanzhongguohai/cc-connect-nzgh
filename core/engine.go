@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,7 @@ const maxQueuedMessages = 5 // cap queued messages to bound memory usage
 const (
 	defaultThinkingMaxLen = 300
 	defaultToolMaxLen     = 500
+	switchHistoryPrefill  = 3
 )
 
 // Slow-operation thresholds. Operations exceeding these durations produce a
@@ -331,24 +333,56 @@ func (e *Engine) runIdleReaper() {
 		case <-e.ctx.Done():
 			return
 		case <-ticker.C:
-			if e.workspacePool == nil {
-				continue
-			}
-			reaped := e.workspacePool.ReapIdle()
-			for _, ws := range reaped {
-				e.interactiveMu.Lock()
-				for key, state := range e.interactiveStates {
-					if state.workspaceDir == ws {
-						if state.agentSession != nil {
-							state.agentSession.Close()
-						}
-						delete(e.interactiveStates, key)
-					}
+			e.reapIdleWorkspaces()
+		}
+	}
+}
+
+func (e *Engine) touchWorkspaceActivity(workspace string) {
+	if workspace == "" || e.workspacePool == nil {
+		return
+	}
+	if ws := e.workspacePool.Get(workspace); ws != nil {
+		ws.Touch()
+	}
+}
+
+func (e *Engine) workspaceHasLiveSession(workspace string) bool {
+	if workspace == "" {
+		return false
+	}
+	e.interactiveMu.Lock()
+	defer e.interactiveMu.Unlock()
+	for _, state := range e.interactiveStates {
+		if state == nil || state.workspaceDir != workspace || state.agentSession == nil {
+			continue
+		}
+		if state.agentSession.Alive() {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) reapIdleWorkspaces() {
+	if e.workspacePool == nil {
+		return
+	}
+	reaped := e.workspacePool.ReapIdleWithKeep(func(path string, _ *workspaceState) bool {
+		return e.workspaceHasLiveSession(path)
+	})
+	for _, ws := range reaped {
+		e.interactiveMu.Lock()
+		for key, state := range e.interactiveStates {
+			if state.workspaceDir == ws {
+				if state.agentSession != nil {
+					state.agentSession.Close()
 				}
-				e.interactiveMu.Unlock()
-				slog.Info("workspace idle-reaped", "workspace", ws)
+				delete(e.interactiveStates, key)
 			}
 		}
+		e.interactiveMu.Unlock()
+		slog.Info("workspace idle-reaped", "workspace", ws)
 	}
 }
 
@@ -1277,9 +1311,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			resolvedWorkspace = workspace
 
 			// Touch for idle tracking
-			if ws := e.workspacePool.Get(workspace); ws != nil {
-				ws.Touch()
-			}
+			e.touchWorkspaceActivity(workspace)
 
 			// Get or create the workspace's agent and session manager
 			wsAgent, wsSessions, err = e.getOrCreateWorkspaceAgent(workspace)
@@ -2158,6 +2190,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 			idleTimer.Reset(e.eventIdleTimeout)
 		}
+		e.touchWorkspaceActivity(state.workspaceDir)
 
 		if !firstEventLogged {
 			firstEventLogged = true
@@ -3197,13 +3230,8 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 	}
 
 	slog.Info("cmdSwitch: cleaning up old session", "session_key", msg.SessionKey)
-	e.cleanupInteractiveState(interactiveKey)
+	e.switchAgentSession(msg.SessionKey, interactiveKey, sessions, agent, matched.ID, matched.Summary)
 	slog.Info("cmdSwitch: cleanup done", "session_key", msg.SessionKey)
-
-	session := sessions.GetOrCreateActive(msg.SessionKey)
-	session.SetAgentInfo(matched.ID, agent.Name(), matched.Summary)
-	session.ClearHistory()
-	sessions.Save()
 
 	shortID := matched.ID
 	if len(shortID) > 12 {
@@ -3215,6 +3243,48 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 	}
 	e.reply(p, msg.ReplyCtx,
 		e.i18n.Tf(MsgSwitchSuccess, displayName, shortID, matched.MessageCount))
+}
+
+func (e *Engine) switchAgentSession(sessionKey, interactiveKey string, sessions *SessionManager, agent Agent, sessionID, summary string) {
+	e.cleanupInteractiveState(interactiveKey)
+	session := sessions.GetOrCreateActive(sessionKey)
+	session.SetAgentInfo(sessionID, agent.Name(), summary)
+	session.ClearHistory()
+	if hp, ok := agent.(HistoryProvider); ok {
+		if entries, err := hp.GetSessionHistory(e.ctx, sessionID, switchHistoryPrefill); err == nil {
+			session.ReplaceHistory(entries)
+		}
+	}
+	sessions.Save()
+}
+
+func parseCardSwitchArgs(args string) (sessionID, summary string, page int, ok bool) {
+	page = 1
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return "", "", 1, false
+	}
+	parts := strings.SplitN(args, "|", 3)
+	if len(parts) == 0 || parts[0] == "" {
+		return "", "", 1, false
+	}
+	id, err := url.QueryUnescape(parts[0])
+	if err != nil || id == "" {
+		return "", "", 1, false
+	}
+	if len(parts) >= 2 && parts[1] != "" {
+		decodedSummary, err := url.QueryUnescape(parts[1])
+		if err != nil {
+			return "", "", 1, false
+		}
+		summary = decodedSummary
+	}
+	if len(parts) >= 3 && parts[2] != "" {
+		if n, err := strconv.Atoi(parts[2]); err == nil && n > 0 {
+			page = n
+		}
+	}
+	return id, summary, page, true
 }
 
 // matchSession resolves a user query to an agent session. Priority:
@@ -5876,6 +5946,12 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 		return e.renderStatusCard(sessionKey, extractUserID(sessionKey))
 	case "/switch":
 		return e.renderListCardSafe(sessionKey, 1)
+	case "/switch-id":
+		_, _, page, ok := parseCardSwitchArgs(args)
+		if !ok {
+			page = 1
+		}
+		return e.renderListCardSafe(sessionKey, page)
 	case "/delete-mode":
 		if strings.HasPrefix(args, "cancel") {
 			return e.renderListCardSafe(sessionKey, 1)
@@ -6046,11 +6122,16 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 			return
 		}
 		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
-		e.cleanupInteractiveState(interactiveKey)
-		session := sessions.GetOrCreateActive(sessionKey)
-		session.SetAgentInfo(matched.ID, agent.Name(), matched.Summary)
-		session.ClearHistory()
-		sessions.Save()
+		e.switchAgentSession(sessionKey, interactiveKey, sessions, agent, matched.ID, matched.Summary)
+
+	case "/switch-id":
+		agent, sessions := e.sessionContextForKey(sessionKey)
+		sessionID, summary, _, ok := parseCardSwitchArgs(args)
+		if !ok {
+			return
+		}
+		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
+		e.switchAgentSession(sessionKey, interactiveKey, sessions, agent, sessionID, summary)
 
 	case "/stop":
 		sessionKey = e.interactiveKeyForSessionKey(sessionKey)
@@ -6641,7 +6722,7 @@ func (e *Engine) renderListCard(sessionKey string, page int) (*Card, error) {
 			e.i18n.Tf(MsgListItem, marker, i+1, displayName, s.MessageCount, s.ModifiedAt.Format("01-02 15:04")),
 			fmt.Sprintf("#%d", i+1),
 			btnType,
-			fmt.Sprintf("act:/switch %d", i+1),
+			fmt.Sprintf("act:/switch-id %s|%s|%d", url.QueryEscape(s.ID), url.QueryEscape(s.Summary), page),
 		)
 	}
 

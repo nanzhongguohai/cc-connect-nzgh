@@ -127,6 +127,34 @@ func TestWorkspacePool_ReapIdle_KeepsActive(t *testing.T) {
 	}
 }
 
+func TestWorkspacePool_ReapIdleWithKeep(t *testing.T) {
+	pool := newWorkspacePool(50 * time.Millisecond)
+	kept := pool.GetOrCreate("/workspace/kept")
+	reapedState := pool.GetOrCreate("/workspace/reaped")
+
+	old := time.Now().Add(-time.Minute)
+	kept.mu.Lock()
+	kept.lastActivity = old
+	kept.mu.Unlock()
+	reapedState.mu.Lock()
+	reapedState.lastActivity = old
+	reapedState.mu.Unlock()
+
+	reaped := pool.ReapIdleWithKeep(func(path string, _ *workspaceState) bool {
+		return path == "/workspace/kept"
+	})
+
+	if len(reaped) != 1 || reaped[0] != "/workspace/reaped" {
+		t.Fatalf("expected only /workspace/reaped to be reaped, got %v", reaped)
+	}
+	if pool.Get("/workspace/kept") == nil {
+		t.Fatal("expected kept workspace to remain")
+	}
+	if pool.Get("/workspace/reaped") != nil {
+		t.Fatal("expected reaped workspace to be removed")
+	}
+}
+
 func TestInteractiveKeyForSessionKey_NormalizesWorkspace(t *testing.T) {
 	tmp := t.TempDir()
 	wsDir := filepath.Join(tmp, "ws1")

@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSessionManager_GetOrCreateActive(t *testing.T) {
@@ -212,6 +213,35 @@ func TestSession_History(t *testing.T) {
 	s.ClearHistory()
 	if h := s.GetHistory(0); len(h) != 0 {
 		t.Errorf("expected empty history after clear, got %d", len(h))
+	}
+}
+
+func TestSession_ReplaceHistory(t *testing.T) {
+	ts1 := time.Now().Add(-2 * time.Minute)
+	ts2 := time.Now().Add(-1 * time.Minute)
+	s := &Session{}
+	s.AddHistory("user", "stale")
+
+	want := []HistoryEntry{
+		{Role: "user", Content: "hello", Timestamp: ts1},
+		{Role: "assistant", Content: "hi there", Timestamp: ts2},
+	}
+	s.ReplaceHistory(want)
+
+	got := s.GetHistory(0)
+	if len(got) != len(want) {
+		t.Fatalf("history length = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("history[%d] = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+
+	want[0].Content = "mutated"
+	gotAgain := s.GetHistory(0)
+	if gotAgain[0].Content != "hello" {
+		t.Fatalf("history should be copied, got %q", gotAgain[0].Content)
 	}
 }
 

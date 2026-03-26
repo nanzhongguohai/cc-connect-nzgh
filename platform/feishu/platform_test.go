@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -426,6 +427,60 @@ func TestInteractivePlatform_CardActionSwitchDispatchesAsCommand(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected switch command dispatch")
+	}
+}
+
+func TestInteractivePlatform_CardActionSwitchIDUsesCardNavHandler(t *testing.T) {
+	platformAny, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	ip := platformAny.(*interactivePlatform)
+
+	actionCh := make(chan string, 1)
+	msgCh := make(chan *core.Message, 1)
+	ip.cardNavHandler = func(action string, sessionKey string) *core.Card {
+		actionCh <- action
+		return core.NewCard().Markdown("switched").Build()
+	}
+	ip.handler = func(_ core.Platform, msg *core.Message) {
+		msgCh <- msg
+	}
+
+	resp, err := ip.onCardAction(&callback.CardActionTriggerEvent{
+		Event: &callback.CardActionTriggerRequest{
+			Operator: &callback.Operator{OpenID: "ou_test_user"},
+			Action: &callback.CallBackAction{Value: map[string]any{
+				"action":      "act:/switch-id " + url.QueryEscape("sess-3") + "|" + url.QueryEscape("History summary") + "|2",
+				"session_key": "feishu:oc_test_chat:ou_test_user",
+			}},
+			Context: &callback.Context{
+				OpenChatID:    "oc_test_chat",
+				OpenMessageID: "om_card_message",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("onCardAction() error = %v", err)
+	}
+	if resp == nil || resp.Card == nil {
+		t.Fatal("expected card response for switch-id action")
+	}
+
+	select {
+	case got := <-actionCh:
+		want := "act:/switch-id " + url.QueryEscape("sess-3") + "|" + url.QueryEscape("History summary") + "|2"
+		if got != want {
+			t.Fatalf("action = %q, want %q", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected card nav handler invocation")
+	}
+
+	select {
+	case msg := <-msgCh:
+		t.Fatalf("unexpected command dispatch: %+v", msg)
+	default:
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2156,7 +2157,7 @@ func TestDeleteMode_CancelReturnsListCard(t *testing.T) {
 	if card == nil {
 		t.Fatal("expected list card after cancel")
 	}
-	if got := countCardActionValues(card, "act:/switch "); got != 2 {
+	if got := countCardActionValues(card, "act:/switch-id "); got != 2 {
 		t.Fatalf("switch action count = %d, want 2", got)
 	}
 }
@@ -3094,16 +3095,46 @@ func TestRenderListCard_MakesEveryVisibleSessionClickable(t *testing.T) {
 		t.Fatalf("renderListCard returned error: %v", err)
 	}
 
-	if got := countCardActionValues(card, "act:/switch "); got != len(sessions) {
+	if got := countCardActionValues(card, "act:/switch-id "); got != len(sessions) {
 		t.Fatalf("switch action count = %d, want %d", got, len(sessions))
 	}
 
-	btn, ok := findCardAction(card, "act:/switch 6")
+	btn, ok := findCardAction(card, "act:/switch-id "+url.QueryEscape(sessions[5].ID)+"|"+url.QueryEscape(sessions[5].Summary)+"|1")
 	if !ok {
 		t.Fatal("expected active session switch action to exist")
 	}
 	if btn.Type != "primary" {
 		t.Fatalf("active session button type = %q, want primary", btn.Type)
+	}
+}
+
+type countingListAgent struct {
+	stubAgent
+	listCalls int
+}
+
+func (a *countingListAgent) ListSessions(_ context.Context) ([]AgentSessionInfo, error) {
+	a.listCalls++
+	return nil, nil
+}
+
+func TestExecuteCardAction_SwitchID_SetsSessionWithoutListing(t *testing.T) {
+	p := &stubPlatformEngine{n: "feishu"}
+	agent := &countingListAgent{}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	key := "feishu:chat:user"
+	e.executeCardAction("/switch-id", url.QueryEscape("sess-123")+"|"+url.QueryEscape("history summary")+"|2", key)
+
+	session := e.sessions.GetOrCreateActive(key)
+	if got := session.GetAgentSessionID(); got != "sess-123" {
+		t.Fatalf("agent session id = %q, want %q", got, "sess-123")
+	}
+	if got := session.GetName(); got != "history summary" {
+		t.Fatalf("session name = %q, want %q", got, "history summary")
+	}
+	if agent.listCalls != 0 {
+		t.Fatalf("ListSessions calls = %d, want 0", agent.listCalls)
 	}
 }
 
@@ -4629,6 +4660,77 @@ func TestExecuteCardAction_ModeCleansUpWithInteractiveKey(t *testing.T) {
 	}
 }
 
+func TestReapIdleWorkspaces_KeepsLiveWorkspaceSessions(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.SetMultiWorkspace(t.TempDir(), filepath.Join(t.TempDir(), "bindings.json"))
+
+	workspace := t.TempDir()
+	ws := e.workspacePool.GetOrCreate(workspace)
+	ws.mu.Lock()
+	ws.lastActivity = time.Now().Add(-time.Hour)
+	ws.mu.Unlock()
+
+	sess := newControllableSession("live-workspace")
+	e.interactiveMu.Lock()
+	e.interactiveStates[workspace+":test:ch:user"] = &interactiveState{
+		agentSession: sess,
+		platform:     p,
+		replyCtx:     "ctx",
+		workspaceDir: workspace,
+	}
+	e.interactiveMu.Unlock()
+
+	e.reapIdleWorkspaces()
+
+	if got := e.workspacePool.Get(workspace); got == nil {
+		t.Fatal("expected workspace with live session to remain")
+	}
+
+	sess.alive = false
+	e.reapIdleWorkspaces()
+
+	if got := e.workspacePool.Get(workspace); got != nil {
+		t.Fatal("expected workspace to be reaped after session stopped")
+	}
+	e.interactiveMu.Lock()
+	_, exists := e.interactiveStates[workspace+":test:ch:user"]
+	e.interactiveMu.Unlock()
+	if exists {
+		t.Fatal("expected interactive state to be removed after reap")
+	}
+}
+
+func TestProcessInteractiveEvents_TouchesWorkspaceOnEvent(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.SetMultiWorkspace(t.TempDir(), filepath.Join(t.TempDir(), "bindings.json"))
+
+	workspace := t.TempDir()
+	ws := e.workspacePool.GetOrCreate(workspace)
+	old := time.Now().Add(-time.Hour)
+	ws.mu.Lock()
+	ws.lastActivity = old
+	ws.mu.Unlock()
+
+	agentSession := newControllableSession("ws-touch")
+	agentSession.events <- Event{Type: EventText, Content: "partial"}
+	agentSession.events <- Event{Type: EventResult, Content: "done", Done: true}
+
+	state := &interactiveState{
+		agentSession: agentSession,
+		platform:     p,
+		replyCtx:     "ctx",
+		workspaceDir: workspace,
+	}
+	session := e.sessions.GetOrCreateActive("test:ch:user")
+	e.processInteractiveEvents(state, session, e.sessions, "test:ch:user", "msg1", time.Now(), nil)
+
+	if !ws.LastActivity().After(old) {
+		t.Fatalf("expected workspace activity to advance, got %v <= %v", ws.LastActivity(), old)
+	}
+}
+
 // ===========================================================================
 // P0 Beta release tests
 // ===========================================================================
@@ -5752,10 +5854,19 @@ func TestWorkspace_NoArgs_ShowsCurrent(t *testing.T) {
 type switchableAgent struct {
 	stubAgent
 	sessions []AgentSessionInfo
+	history  map[string][]HistoryEntry
 }
 
 func (a *switchableAgent) ListSessions(_ context.Context) ([]AgentSessionInfo, error) {
 	return a.sessions, nil
+}
+
+func (a *switchableAgent) GetSessionHistory(_ context.Context, sessionID string, limit int) ([]HistoryEntry, error) {
+	entries := append([]HistoryEntry(nil), a.history[sessionID]...)
+	if limit > 0 && len(entries) > limit {
+		entries = entries[len(entries)-limit:]
+	}
+	return entries, nil
 }
 
 func TestCmdSwitch_NoArgs_ShowsUsage(t *testing.T) {
@@ -5783,6 +5894,14 @@ func TestCmdSwitch_ByIndex_SetsSession(t *testing.T) {
 		sessions: []AgentSessionInfo{
 			{ID: "sess-aaa", Summary: "First session", MessageCount: 5},
 			{ID: "sess-bbb", Summary: "Second session", MessageCount: 3},
+		},
+		history: map[string][]HistoryEntry{
+			"sess-bbb": {
+				{Role: "user", Content: "u1"},
+				{Role: "assistant", Content: "a1"},
+				{Role: "user", Content: "u2"},
+				{Role: "assistant", Content: "a2"},
+			},
 		},
 	}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
@@ -5820,6 +5939,13 @@ func TestCmdSwitch_ByIndex_SetsSession(t *testing.T) {
 	session := e.sessions.GetOrCreateActive(key)
 	if id := session.GetAgentSessionID(); id != "sess-bbb" {
 		t.Errorf("expected session ID sess-bbb, got %q", id)
+	}
+	history := session.GetHistory(10)
+	if len(history) != 3 {
+		t.Fatalf("history length after switch = %d, want 3", len(history))
+	}
+	if history[0].Content != "a1" || history[1].Content != "u2" || history[2].Content != "a2" {
+		t.Fatalf("unexpected switched history: %#v", history)
 	}
 }
 

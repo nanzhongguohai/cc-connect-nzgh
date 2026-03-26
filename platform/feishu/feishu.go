@@ -394,9 +394,8 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 
 	// nav: / act: — synchronous card update
 	if strings.HasPrefix(actionVal, "nav:") || strings.HasPrefix(actionVal, "act:") {
-		// Switching sessions may require listing sessions and closing old state,
-		// which can exceed Feishu card callback latency. Dispatch it as a normal
-		// command instead of blocking the callback on an in-place card refresh.
+		// Legacy /switch buttons encoded numeric indexes only, so they still
+		// dispatch as normal commands for backward compatibility.
 		if strings.HasPrefix(actionVal, "act:/switch ") {
 			cmdText := strings.TrimPrefix(actionVal, "act:")
 			rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}

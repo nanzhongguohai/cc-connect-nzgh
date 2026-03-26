@@ -105,6 +105,13 @@ func (s *Session) ClearHistory() {
 	s.History = nil
 }
 
+// ReplaceHistory atomically replaces the in-memory history with the provided entries.
+func (s *Session) ReplaceHistory(entries []HistoryEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.History = append([]HistoryEntry(nil), entries...)
+}
+
 // GetHistory returns the last n entries. If n <= 0, returns all.
 func (s *Session) GetHistory(n int) []HistoryEntry {
 	s.mu.Lock()
