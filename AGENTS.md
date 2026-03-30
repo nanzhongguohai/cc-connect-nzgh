@@ -214,6 +214,12 @@ Available tags: `no_claudecode`, `no_codex`, `no_cursor`, `no_gemini`,
 4. **i18n complete**: all new user-facing strings have translations for all languages
 5. **No secrets in code**: no API keys, tokens, or credentials in source files
 
+## Push Deployment Guardrail
+
+- Before any `git push`, agents must run `bash scripts/redeploy-local.sh`.
+- If `scripts/redeploy-local.sh` fails, agents must stop, report the error, and must not push.
+- If the user asks to enable automatic enforcement locally, install the git hook with `bash scripts/install-pre-push-hook.sh`.
+
 ## Adding a New Platform
 
 1. Create `platform/newplatform/newplatform.go`

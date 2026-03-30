@@ -58,7 +58,9 @@ release/
 # Testing & temporary files
 # ============================================================================
 test/
-scripts/
+scripts/*
+!scripts/redeploy-local.sh
+!scripts/install-pre-push-hook.sh
 tmp/
 temp/
 *.tmp
