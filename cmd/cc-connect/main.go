@@ -202,6 +202,11 @@ func main() {
 		}
 
 		engine := core.NewEngine(proj.Name, agent, platforms, sessionFile, lang)
+		showCtx := true
+		if proj.ShowContextIndicator != nil {
+			showCtx = *proj.ShowContextIndicator
+		}
+		engine.SetShowContextIndicator(showCtx)
 		engine.SetAttachmentSendEnabled(cfg.AttachmentSend != "off")
 		engine.SetBaseWorkDir(workDir)
 		engine.SetProjectStateStore(projectState)
@@ -497,6 +502,9 @@ func main() {
 		})
 		engine.SetProviderModelSaveFunc(func(providerName, model string) error {
 			return config.SaveProviderModel(projName, providerName, model)
+		})
+		engine.SetModelSaveFunc(func(model string) error {
+			return config.SaveAgentModel(projName, model)
 		})
 
 		// Wire config reload
@@ -1032,6 +1040,12 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 	} else {
 		engine.SetAutoCompressConfig(false, 0, 0)
 	}
+
+	showCtx := true
+	if proj.ShowContextIndicator != nil {
+		showCtx = *proj.ShowContextIndicator
+	}
+	engine.SetShowContextIndicator(showCtx)
 
 	// Reload sender injection
 	engine.SetInjectSender(proj.InjectSender != nil && *proj.InjectSender)
